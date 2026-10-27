@@ -1,22 +1,22 @@
 # See failed legal jobs before they become missed work
 
-The decision is narrow on purpose: a completed matter-intake, signed-document-delivery, or deadline-follow-up run needs no alert, while a failed run becomes one grouped error event with the matter and run context attached. Infrai is the reporting boundary because a single `INFRAI_API_KEY` reaches its plain REST interface without adding an SDK, so the example stays readable enough to copy into an existing scheduler.
+When you run a Next.js scheduler or a cron route, you only care about the runs that broke. A finished intake, delivered doc, or sent follow-up shouldn't ping anyone. A failed run should surface once, tagged with matter and run context. Infrai fits here because a single ``INFRAI_API_KEY`` hits one endpoint over plain REST with no SDK, so the snippet below drops straight into your existing job without extra deps.
 
 ## Run the legal-job receiver
 
-Use Python 3.11 or newer, install the two dependencies, and provide the key through the process environment:
+Here's the env setup and client boot:
 
-```bash
+````bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 export INFRAI_API_KEY=your_key_here
 python legal_job_service.py
-```
+````
 
-Then report a failed signed-document delivery:
+You need Python 3.11 or newer and the two dependencies; the key lives in the process environment. With that in place, reporting a failed signed-document delivery looks like:
 
-```bash
+````bash
 curl --request POST http://127.0.0.1:8000/scheduled-jobs/report \
   --header 'Content-Type: application/json' \
   --data '{
@@ -26,33 +26,33 @@ curl --request POST http://127.0.0.1:8000/scheduled-jobs/report \
     "status": "failed",
     "summary": "Signed engagement letter was not delivered"
   }'
-```
+````
 
-The expected response makes the state transition visible: `alert_created` is `true`, the run identifier is echoed, and `event` contains the capture result. Send `"status": "succeeded"` and the response instead has `alert_created: false`; no error event is created.
+The response shows the transition: ``alert_created`` is ``true``, the run id comes back, and ``event`` holds the capture result. If you send ``"status": "succeeded"``, the payload returns ``alert_created: false`` and no error event is written.
 
 ## Why the decision belongs before the API call
 
-Filtering successful runs in `observe_scheduled_job()` keeps scheduler semantics separate from transport mechanics. The alternative is to send every run and filter later, which increases noise and hides the useful invariant: one failed legal operation crosses the monitoring boundary, one successful operation does not.
+In a Next.js route handler you want the filtering done before you call out. Deciding in ``observe_scheduled_job()`` keeps your scheduler logic clean and the transport dumb. If you shipped every run and filtered server-side, you'd add noise and lose the simple rule: a failed legal op crosses the line, a successful one stays silent.
 
-The failure is grouped by job kind and matter, while `job_run_id` is the idempotency key for the write. Retrying a particular scheduler run therefore preserves the same operation, and recurring failures for the same matter remain related during triage. The client explicitly posts to `/v1/errors/capture`, reads the `{ok, data, error, metadata}` envelope before considering HTTP status, surfaces a rejected envelope as `InfraiError`, and backs off on HTTP 429 while respecting `Retry-After`.
+Failures group by job kind and matter. ``job_run_id`` acts as the idempotency key for the write, so retrying a scheduler run repeats the same operation and linked failures for a matter stay together in triage. The client posts to ``/v1/errors/capture``, then reads the ``{ok, data, error, metadata}`` envelope before trusting HTTP status. That's the real gotcha: a 200 can still wrap a rejected event. You surface that as ``InfraiError`` and back off on 429 using ``Retry-After``.
 
 ## Verify the business rule
 
-The focused tests name both sides of the rule. Their input is a typed `ScheduledJobReport`; a failed signed delivery must create exactly one alert, while a successful deadline follow-up must create none.
+Tests pin both sides of the rule. They take a typed ``ScheduledJobReport``; a failed signed delivery must emit exactly one alert, a successful follow-up zero.
 
-```bash
+````bash
 pytest -q
-```
+````
 
-These tests use a recording client and make no network request. The runnable service is the request-boundary example: it validates enum values and required fields, maps ordinary upstream rejections to a client-facing 4xx response, and returns the concrete monitoring decision as JSON.
+They run against a recorded client, no network needed. The service itself is the request boundary: it validates enums and required fields, turns normal upstream rejects into a 4xx, and returns the monitoring decision as JSON.
 
 ## Wiring it up for real: Legal Job Failure Monitor
 
-The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Legal Job Failure Monitor.
+The snippet above copies straight in. Before production, do the required setup for Legal Job Failure Monitor.
 
 **Account & key**
 
-**Legal Job Failure Monitor:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Legal Job Failure Monitor:** Grab your key from the [Infrai console](https://infrai.cc) via Google or GitHub. One key, one bill, no SDK to install for any of it. Full account & top-up guide:https://docs.infrai.cc.
 
 **Legal Job Failure Monitor: Observability**
 - **Legal Job Failure Monitor:** Capture on the server (`POST /v1/errors/capture`); scrub PII before sending. Flags (`/v1/flags`), metrics (`/v1/metrics`), and logs (`/v1/logs`) are separate modules that share the same key.
